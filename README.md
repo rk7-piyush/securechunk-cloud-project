@@ -1,66 +1,42 @@
-# SecureChunk — Encrypted File Chunking and Secure Download
+# SecureChunk
 
-A Windows-friendly academic prototype. It encrypts a file locally using AES-256-GCM, splits the ciphertext into chunks, packages the chunks and manifest into a ZIP bundle, and restores the original file after reassembly and authenticated decryption. Optional S3 upload/download is included.
+Encrypts a file in chunks, stores every encrypted chunk in an AWS S3 bucket, and restores the original file on download.
 
-## Requirements
-- Windows 10/11
-- Python 3.10 or newer
-- Internet connection for installing Python packages
-- AWS account and permission to access the target S3 bucket (only for optional S3 mode)
+## How it behaves
+- **Upload:** the file is split into chunks of the size you pick. Each chunk is encrypted on its own with AES-256-GCM and uploaded straight to S3 as `<folder>/<file id>/chunk_00000.bin`, `chunk_00001.bin`, and so on. A `manifest.json` is written last. Nothing is saved locally and no plaintext reaches S3.
+- **Confirmation:** after upload the app asks S3 for every object again and shows the bucket, folder, chunk count, chunk sizes, hashes and per-chunk S3 status.
+- **Download:** open **Stored files**, enter the passphrase and click **Download and decrypt**. The chunks are fetched from S3, checked, decrypted, reassembled and offered as the original file.
+- **Integrity:** every chunk is bound to its file, position and total chunk count. Edited, swapped, removed or corrupted chunks make decryption fail. The restored file's SHA-256 is compared with the original.
 
 ## Run on Windows
-1. Install Python from https://www.python.org/downloads/windows/ . During installation, check **Add python.exe to PATH**.
-2. Open Command Prompt in this project folder.
-3. Create a virtual environment:
+1. Install Python 3.10 or newer from https://www.python.org/downloads/windows/ (tick **Add python.exe to PATH**).
+2. In Command Prompt, inside this folder:
    ```bat
    py -m venv .venv
    .venv\Scripts\activate
-   ```
-4. Install dependencies:
-   ```bat
    python -m pip install --upgrade pip
    pip install -r requirements.txt
-   ```
-5. Start the app:
-   ```bat
    streamlit run app.py
    ```
-6. Your browser should open the local app (usually http://localhost:8501).
+3. Open http://localhost:8501.
 
-## Demo steps
-1. In **Encrypt & chunk**, choose a small test file (e.g. `test.txt`).
-2. Enter a strong passphrase with at least 12 characters. For your demo, write it down somewhere safe temporarily; the app does not store it in the bundle.
-3. Choose 64 KiB or 1024 KiB chunk size and click **Encrypt and create bundle**.
-4. Download the encrypted bundle.
-5. Open **Restore file**, upload the bundle, enter the same passphrase, click **Restore original file**, and download the restored file.
-6. Compare the restored file with the original. Wrong passphrase should fail authentication.
+## AWS setup
+The app finds credentials in this order:
+1. `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`) from `.streamlit/secrets.toml` or environment variables.
+2. The AWS profile named by `AWS_PROFILE` (default `securechunk-login`), if it exists.
+3. The normal boto3 credential chain.
 
-## Optional AWS S3 integration
-The code uses the standard AWS SDK credential chain and the Mumbai region `ap-south-1`. Do not put AWS access keys in the source code or in screenshots.
+Bucket, folder and region can be changed in the sidebar, or preset through `S3_BUCKET`, `S3_PREFIX` and `AWS_REGION` (see `.streamlit/secrets.example.toml`). Defaults: bucket `encrypted-file-project-2026-unique`, folder `securechunk-demo`, region `ap-south-1`.
 
-If AWS CLI is installed and your account is verified, configure an AWS profile in Command Prompt:
-```bat
-aws configure
-```
-Use an IAM user's credentials only if your instructor/account owner has intentionally set up an IAM user for this purpose. Do not use root account access keys. If using AWS IAM Identity Center or another organization login, use its approved login flow instead.
-
-Test credentials:
+Check access from Command Prompt:
 ```bat
 aws sts get-caller-identity
-```
-Test bucket access:
-```bat
 aws s3 ls s3://encrypted-file-project-2026-unique
 ```
-Then run the app and use the **Optional S3** tab. The app uploads only the encrypted ZIP bundle, not the original plaintext file. It requests SSE-S3 on the object (`AES256`) and stores the bundle at `securechunk-demo/securechunk_bundle.zip`.
 
-If API access is not yet enabled for your new AWS account, the local encryption/decryption demo still works. Do not change bucket public-access settings to make uploads work.
+The IAM identity needs on that bucket: `s3:PutObject`, `s3:GetObject`, and `s3:ListBucket`. `s3:DeleteObject` is optional and lets the app remove partial uploads if one fails.
 
-## Security notes / limitations
-- This is a learning prototype, not a production file-transfer service.
-- AES-GCM authenticates encrypted content. The manifest includes a SHA-256 digest to detect accidental or malicious chunk modification before decryption.
-- The encryption key is derived from a passphrase using Scrypt with a fresh random salt. Use a strong, unique passphrase. Losing it means the file cannot be decrypted.
-- The full file is encrypted in memory before chunking, so use small files for the demo.
-- The bundle contains encrypted chunks and non-secret metadata; it does not store the passphrase or derived key.
-- S3 SSE-S3 protects the uploaded bundle at rest. It is separate from the client-side encryption.
-- The application does not make any S3 object public.
+## Files
+- `app.py` – Streamlit interface
+- `core.py` – chunked encryption, S3 upload/download, listing
+- `.streamlit/config.toml` – theme and upload limit (1 GB)
