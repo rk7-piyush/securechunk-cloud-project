@@ -6,6 +6,15 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import boto3
+
+session = boto3.Session(
+    profile_name="securechunk-login",
+    region_name="ap-south-1"
+)
+
+s3 = session.client("s3")
+
 import streamlit as st
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -82,15 +91,29 @@ def decrypt_bundle(bundle_bytes: bytes, passphrase: str):
 
 
 def get_s3_client():
+    """Build an S3 client using Streamlit Secrets or the normal local AWS credential chain."""
     import boto3
-    return boto3.client("s3", region_name="ap-south-1")
+
+    client_kwargs = {"region_name": "ap-south-1"}
+
+    # Streamlit Community Cloud credentials are stored in App Settings > Secrets.
+    # Local development can continue using AWS_PROFILE / the standard boto3 credential chain.
+    access_key = st.secrets.get("AWS_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = st.secrets.get("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = st.secrets.get("AWS_SESSION_TOKEN") or os.getenv("AWS_SESSION_TOKEN")
+
+    if access_key and secret_key:
+        client_kwargs["aws_access_key_id"] = access_key
+        client_kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            client_kwargs["aws_session_token"] = session_token
+
+    return boto3.client("s3", **client_kwargs)
 
 
 def upload_bundle_to_s3(bundle_bytes: bytes, bucket: str, prefix: str):
     # Upload only the encrypted bundle. S3 applies the bucket's default SSE-S3 encryption.
-    import boto3
-    from botocore.exceptions import BotoCoreError, ClientError
-    client = boto3.client("s3", region_name="ap-south-1")
+    client = get_s3_client()
     key = f"{prefix.strip('/')}/securechunk_bundle.zip" if prefix.strip("/") else "securechunk_bundle.zip"
     client.put_object(
         Bucket=bucket,
@@ -99,12 +122,14 @@ def upload_bundle_to_s3(bundle_bytes: bytes, bucket: str, prefix: str):
         ContentType="application/zip",
         ServerSideEncryption="AES256",
     )
+
+    # Confirm the object is present before reporting success in the UI.
+    client.head_object(Bucket=bucket, Key=key)
     return key
 
 
 def download_bundle_from_s3(bucket: str, key: str):
-    import boto3
-    client = boto3.client("s3", region_name="ap-south-1")
+    client = get_s3_client()
     response = client.get_object(Bucket=bucket, Key=key)
     return response["Body"].read()
 
@@ -162,20 +187,26 @@ with decrypt_tab:
 
 with s3_tab:
     st.subheader("3. Optional: store the encrypted bundle in S3")
-    st.warning("Only try this after AWS account verification/API access works. Never paste access keys into this app. Configure credentials with AWS CLI or an AWS profile on your computer.")
+    st.info("Upload stores the encrypted ZIP bundle in your private S3 bucket. On Streamlit Community Cloud, configure credentials in App Settings → Secrets; locally, boto3 can use your normal AWS credential chain.")
     bucket_name = st.text_input("Your S3 bucket name", value="encrypted-file-project-2026-unique")
     object_prefix = st.text_input("S3 object prefix (folder)", value="securechunk-demo")
     if st.button("Upload latest encrypted bundle to S3", disabled="last_bundle" not in st.session_state):
         try:
-            object_key = upload_bundle_to_s3(st.session_state["last_bundle"], bucket_name, object_prefix)
-            st.success(f"Uploaded encrypted bundle to s3://{bucket_name}/{object_key}")
+            with st.spinner("Uploading encrypted bundle to AWS S3 and verifying the object..."):
+                object_key = upload_bundle_to_s3(
+                    st.session_state["last_bundle"], bucket_name, object_prefix
+                )
+            st.success("Upload successful — AWS S3 confirmed the encrypted bundle is present.")
+            st.code(f"s3://{bucket_name}/{object_key}", language="text")
+            st.caption(f"Uploaded object: {object_key}")
         except Exception as e:
             st.error(f"S3 upload failed: {e}")
     st.markdown("**Download an encrypted bundle from S3**")
     s3_key = st.text_input("Exact S3 object key", value="securechunk-demo/securechunk_bundle.zip")
     if st.button("Download encrypted bundle from S3"):
         try:
-            data = download_bundle_from_s3(bucket_name, s3_key)
+            with st.spinner("Downloading encrypted bundle from AWS S3..."):
+                data = download_bundle_from_s3(bucket_name, s3_key)
             st.download_button("Save encrypted bundle", data=data, file_name="securechunk_bundle.zip", mime="application/zip", key="s3_bundle_download")
             st.success("Bundle fetched from S3. Save it, then use the Restore file tab to decrypt it.")
         except Exception as e:
