@@ -8,12 +8,6 @@ from pathlib import Path
 
 import boto3
 
-session = boto3.Session(
-    profile_name="securechunk-login",
-    region_name="ap-south-1"
-)
-
-s3 = session.client("s3")
 
 import streamlit as st
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
